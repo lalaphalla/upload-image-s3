@@ -3,6 +3,7 @@ const multer = require("multer");
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const { Readable } = require("stream");
 const { Upload } = require("@aws-sdk/lib-storage");
+const sharp = require("sharp");
 const dotenv = require('dotenv');
 
 dotenv.config({ path: './.env' });
@@ -45,26 +46,34 @@ const upload = multer({
 });
 
 app.post("/upload", upload.single("photo"), async (req, res) => {
+
+
   req.file.filename = `user-${Date.now()}.png`;
-  console.log(req.file);
-  const fileStream = Readable.from(req.file.buffer);
-  // const params = {
-  // 	Bucket: 'pmp2024',
-  // 	Key: req.file.originalname,
-  //     // Key: req.file.fieldname,
-  // 	Body: fileStream,
-  // }
-  const upload = new Upload({
-    client: s3Client,
-    params: {
-      Bucket: "pmp2024",
-      Key: req.file.filename,
-      Body: fileStream, // Use the buffer here
-    },
-  });
+  // console.log(req.file);
+  console.log(req.file.buffer);
+  // const fileStream = Readable.from(req.file.buffer);
+
+  const input = {
+    // Bucket is the name of the bucket
+    // Body is a file you get from sharp
+    // Key is the name of the file
+  	Bucket: 'agteach-assets',
+  	Body: req.file.buffer,
+  	Key: req.file.originalname,
+  }
+  // const upload = new Upload({
+  //   client: s3Client, 
+  //   params: {
+  //     Bucket: "pmp2024",
+  //     Key: req.file.filename,
+  //     Body: fileStream, // Use the buffer here
+  //   },
+  // });
   try {
-    // await s3Client.send(new PutObjectCommand(params));
-    await upload.done();
+    const command = new PutObjectCommand(input);
+    const response = await s3Client.send(command);
+
+    // await upload.done();
     console.log("File uploaded");
     res.status(200).json({ message: "success", filename: req.file.filename });
   } catch (err) {
