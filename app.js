@@ -1,5 +1,7 @@
 const express = require("express");
 const multer = require("multer");
+
+// Connection to S3
 const {
   S3Client,
   PutObjectCommand,
@@ -132,14 +134,13 @@ app.delete("/images/:filename", async (req, res) => {
 async function multipleUploads(req, res) {
   // req.files.imageCover one file
   // req.files.images array
-console.log('object');
+  console.log("object");
   const uploadPromises = req.files.images.map(async (file, idx) => {
     const input = {
       Bucket: process.env.BUCKET_NAME,
       Body: file.buffer,
-      Key: `products/p001/product-img-${idx + 1}.png`,
-      ContentDisposition: 'inline' // This ensures the file is displayed in the browser
-      
+      Key: `products/p003/product-img-${idx + 1}.png`,
+      ContentType: "image/png", // This ensures the file is displayed in the browser
     };
     // console.log(input);
     await s3Client.send(new PutObjectCommand(input));
@@ -155,19 +156,17 @@ app.post(
     { name: "images", maxCount: 4 },
   ]),
   async (req, res) => {
-
     try {
       const input = {
         Bucket: process.env.BUCKET_NAME,
         Body: req.files.imageCover[0].buffer,
-        Key: `products/p001/cover.jpg`,
-        ContentDisposition: 'inline' // This ensures the file is displayed in the browser
-
+        Key: `products/p003/cover.jpg`,
+        ContentType: "image/png", // This ensures the file is displayed in the browser
       };
-
+      await s3Client.send(new PutObjectCommand(input));
       // console.log(input);
       // await s3Client.send(new PutObjectCommand(input));
-      await multipleUploads(req,res);
+      await multipleUploads(req, res);
       // console.log('multiple');
       // const upload = new Upload({
       //   client: s3Client,
@@ -211,8 +210,6 @@ app.post("/videos", uploadVideo.single("video"), async (req, res) => {
     Bucket: process.env.BUCKET_NAME,
     Body: req.file.buffer,
     Key: req.file.fieldname,
-    ContentDisposition: 'inline' // This ensures the file is displayed in the browser
-
   };
   console.log(input);
   try {
@@ -240,5 +237,23 @@ app.get("/videos/:filename", async (req, res) => {
   }
 });
 //route uplaod multiple videos
-app.post("/multiple-video", uploadVideo.fields());
-app.listen(3000, () => console.log("listening port 3000"));
+app.post(
+  "/multiple-video",
+  uploadVideo.fields([{ name: "lectures", maxCount: 50 }]),
+  async (req, res) => {
+    try {
+      const uploadPromises = req.files.lectures.map(async (file, idex) => {
+        const input = {
+          Bucket: process.env.BUCKET_NAME,
+          Body: file.buffer,
+          Key: `courses/c001/lectures/lecture-${idex + 1}.mp4`, //req.file.fieldname,
+        };
+        await s3Client.send(new PutObjectCommand(input));
+      });
+
+      await Promise.all(uploadPromises);
+      res.status(200).json({ message: "success" });
+    } catch (err) {}
+  }
+);
+app.listen(3001, () => console.log("listening port 3001"));
