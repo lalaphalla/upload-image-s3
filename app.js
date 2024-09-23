@@ -1,5 +1,14 @@
 const express = require("express");
 const multer = require("multer");
+const ffmpeg = require("fluent-ffmpeg");
+const fs = require("fs");
+const { PassThrough } = require("stream");
+const path = require("path");
+
+const { Readable } = require("stream");
+const { Upload } = require("@aws-sdk/lib-storage");
+const sharp = require("sharp");
+const dotenv = require("dotenv");
 
 // Connection to S3
 const {
@@ -7,16 +16,25 @@ const {
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
+  ListBucketsCommand,
 } = require("@aws-sdk/client-s3");
-const { Readable } = require("stream");
-const { Upload } = require("@aws-sdk/lib-storage");
-const sharp = require("sharp");
-const dotenv = require("dotenv");
 
 dotenv.config({ path: "./.env" });
 
 const app = express();
 
+// Backblaze B2 Credentials
+// Create an S3 client using the Backblaze endpoint
+// const s3Client = new S3Client({
+//   endpoint: "https://s3.us-west-002.backblazeb2.com",
+//   region: "us-west-004",
+//   credentials: {
+//     accessKeyId: process.env.BACKBLAZE_ACCESS_KEY,
+//     secretAccessKey: process.env.BACKBLAZE_SECRET_KEY,
+//   },
+// });
+
+// AWS S3
 const s3Client = new S3Client({
   region: process.env.YOUR_AWS_REGION,
   credentials: {
@@ -45,20 +63,18 @@ const multerVideoFilter = (req, file, cb) => {
   }
 };
 
-// const multerStroage = multer.diskStorage({
-//   destination: (req, file, cb) => {
-//     cb(null, "uploads/");
-//   },
-//   filename: (req, file, cb) => {
-//     const ext = file.mimetype.split("/")[1];
-//     cb(null, `user-${Date.now()}.${ext}`);
-//   },
-// });
 //image will storage in a buffer
 const multerStorage = multer.memoryStorage();
+const multerDiskStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, "uploads/");
+  },
+  filename: (req, file, cb) => {
+    const ext = file.mimetype.split("/")[1];
+    cb(null, `user-profile-${Date.now()}.${ext}`);
+  },
+});
 
-// const upload = multer({ dest: "uploads/" });
-// const upload = multer({ storage: multerStorage, fileFilter: multerFilter });
 const upload = multer({
   storage: multerStorage,
   fileFilter: multerFilter,
@@ -67,24 +83,45 @@ const upload = multer({
 const uploadVideo = multer({
   storage: multerStorage,
   fileFilter: multerVideoFilter,
-  limits: { fileSize: 10000000 },
+  limits: {
+    fileSize: 200 * 1024 * 1024, // 50MB limit
+  },
+});
+const copyVideo = multer({
+  storage: multerDiskStorage,
+  fileFilter: multerVideoFilter,
+  limits: {
+    fileSize: 200 * 1024 * 1024, // 50MB limit
+  },
 });
 
 app.post("/upload", upload.single("photo"), async (req, res) => {
-  req.file.filename = `user-profile-${Date.now()}.png`;
+  async function listBuckets() {
+    try {
+      const response = await s3Client.send(new ListBucketsCommand({}));
+      console.log("Buckets:", response.Buckets);
+    } catch (error) {
+      console.error("Error listing buckets:", error);
+    }
+  }
+
+  listBuckets();
+
+  // req.file.filename = `user-profile-${Date.now()}.png`;
   // console.log(req.file);
   console.log(req.file.buffer);
   // const fileStream = Readable.from(req.file.buffer);
-
+  req.file.filename = `customers/anb001/user_profile.png`;
   const input = {
     // Bucket is the name of the bucket
     // Body is a file you get from sharp
     // Key is the name of the file
     Bucket: process.env.BUCKET_NAME,
     Body: req.file.buffer,
-    Key: `customers/anb001/user_profile.png`,
+    Key: req.file.filename,
   };
 
+  console.log(input);
   try {
     const command = new PutObjectCommand(input);
     const response = await s3Client.send(command);
@@ -167,32 +204,6 @@ app.post(
       // console.log(input);
       // await s3Client.send(new PutObjectCommand(input));
       await multipleUploads(req, res);
-      // console.log('multiple');
-      // const upload = new Upload({
-      //   client: s3Client,
-      //   params: {
-      //     Bucket: "pmp2024",
-      //     Key: req.files.imageCover.filename,
-      //     Body: req.files.imageCover.buffer, // Use the buffer here
-      //   },
-      // });
-      // const uploadPromises = req.files.images.map((file) => {
-      //   const fileStream = file.buffer;
-      //   const params = {
-      //     Bucket: "pmp2024",
-      //     Key: file.originalname + Date.now(),
-      //     Body: fileStream,
-      //   };
-
-      //   const upload = new Upload({
-      //     client: s3Client,
-      //     params,
-      //   });
-
-      //   return upload.done();
-      // });
-
-      // await Promise.all(uploadPromises);
 
       // res.status(200).json("File uploaded");
       res.status(200).json({ message: "success" });
@@ -202,14 +213,99 @@ app.post(
   }
 );
 
+const compressVideo2 = (inputPath, outputPath, res) => {
+  console.log("object", inputPath, outputPath);
+  ffmpeg(inputPath)
+    .output(path.join(__dirname, "uploads", outputPath))
+    .videoCodec("libx264")
+    .size("60%")
+    .on("end", () => {
+      console.log("Compression completed!");
+      // res.send("Video uploaded and compressed successfully!");
+    })
+    .on("error", (err) => {
+      console.error("Compression failed:", err);
+      res.status(500).send("Compression failed.");
+    })
+    .run();
+};
+// Compress video using FFmpeg
+const compressVideo = (inputBuffer, outputPath) => {
+  console.log(inputBuffer);
+  return new Promise((resolve, reject) => {
+    const outputStream = fs.createWriteStream(outputPath);
+    const inputStream = Readable.from(inputBuffer); // Create a readable stream from the buffer
+
+    // Compress the video
+    ffmpeg()
+      .input(inputStream)
+      .inputFormat("mp4")
+      .videoCodec("libx264") // Use x264 codec for compression
+      .size("640x?") // Resize video (optional)
+      .on("end", () => {
+        console.log("Compression finished");
+        resolve(outputPath);
+      })
+      .on("error", (err) => {
+        reject(err);
+      })
+      .pipe(outputStream, { end: true });
+  });
+};
+
+// Compress video using FFmpeg and return a stream
+const compressVideoToStream = (inputBuffer) => {
+  const passThroughStream = new PassThrough();
+
+  // Compress the video and pipe the result to the PassThrough stream
+  console.log(inputBuffer);
+  ffmpeg()
+    .input(inputBuffer)
+    .videoCodec("libx264") // Use x264 codec for compression
+    .size("640x?") // Resize video (optional)
+    .on("error", (err) => {
+      console.error("Compression error: ", err);
+      passThroughStream.end(); // End stream on error
+    })
+    .on("end", () => {
+      console.log("Compression finished");
+      passThroughStream.end();
+    })
+    .pipe(passThroughStream);
+
+  return passThroughStream;
+};
+app.post("/compress", copyVideo.single("video"), async (req, res) => {
+  const videoPath = req.file.path;
+  const outputFilePath = `compressed_${req.file.originalname}`;
+  compressVideo2(videoPath, outputFilePath, res);
+  req.file.fieldname = `video-${Date.now()}.mp4`;
+  console.log(req.file.mimetype);
+  try {
+    res.status(200).json({ message: "success", filename: req.file.fieldname });
+  } catch (err) {
+    res.status(500).json({ message: "failed", error: err });
+  }
+});
 // route upload video
 app.post("/videos", uploadVideo.single("video"), async (req, res) => {
+  // const compressedVideoStream = compressVideoToStream(req.file.buffer);
+  console.log(req.file);
+  const videoPath = req.file.path;
+  // const outputFilePath = `compressed_${req.file.originalname}`;
+
+  // await uploadToS3(compressedVideoStream, `compressed-${Date.now()}.mp4`);
+
+  // await compressVideo(req.file.buffer, `video-${Date.now()}.mp4`);
+  // compressVideo2(videoPath, outputFilePath, res);
+
   req.file.fieldname = `video-${Date.now()}.mp4`;
   console.log(req.file.mimetype);
   const input = {
     Bucket: process.env.BUCKET_NAME,
     Body: req.file.buffer,
-    Key: req.file.fieldname,
+    Key: "courses/c001/lecture01/" + req.file.fieldname,
+    ContentType: "video/mp4",
   };
   console.log(input);
   try {
@@ -226,7 +322,7 @@ app.get("/videos/:filename", async (req, res) => {
   try {
     const input = {
       Bucket: process.env.BUCKET_NAME,
-      Key: filename,
+      Key: "courses/c001/lectures/" + filename,
     };
     const command = new GetObjectCommand(input);
     const data = await s3Client.send(command);
@@ -236,6 +332,7 @@ app.get("/videos/:filename", async (req, res) => {
     res.status(500).json({ message: "failed", error: err });
   }
 });
+
 //route uplaod multiple videos
 app.post(
   "/multiple-video",
@@ -247,6 +344,7 @@ app.post(
           Bucket: process.env.BUCKET_NAME,
           Body: file.buffer,
           Key: `courses/c001/lectures/lecture-${idex + 1}.mp4`, //req.file.fieldname,
+          ContentType: "video/mp4",
         };
         await s3Client.send(new PutObjectCommand(input));
       });
